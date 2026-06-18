@@ -1,0 +1,6 @@
+{
+  "name": "Train Running Status Tracker",
+  "description": "Real-time layout of Indian Railways running status, featuring live route timelines, delay forecasts, simulated and active GPS tracking, and AI-powered delay analysis.",
+  "requestFramePermissions": ["geolocation"],
+  "majorCapabilities": ["MAJOR_CAPABILITY_SERVER_SIDE_GEMINI_API"]
+}
