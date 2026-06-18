@@ -26,7 +26,11 @@ import NotificationCenter from "./components/NotificationCenter";
 
 export default function App() {
   const [searchTerm, setSearchTerm] = useState("");
+  const [trains, setTrains] = useState<Train[]>(POPULAR_TRAINS);
   const [selectedTrainNum, setSelectedTrainNum] = useState("22436"); // Default Vande Bharat
+
+  const [isSearchingDynamic, setIsSearchingDynamic] = useState(false);
+  const [dynamicSearchError, setDynamicSearchError] = useState("");
   
   // Real-time journey simulation parameters
   const [simulationProgress, setSimulationProgress] = useState(38); // 38% completed trigger point
@@ -34,6 +38,18 @@ export default function App() {
   const [simSpeedFactor, setSimSpeedFactor] = useState(2); // delay multiplier
 
   const [currentTime, setCurrentTime] = useState(new Date().toLocaleTimeString());
+
+  // Fetch train lists from server on mount
+  useEffect(() => {
+    fetch("/api/trains")
+      .then((res) => res.json())
+      .then((data) => {
+        if (Array.isArray(data) && data.length > 0) {
+          setTrains(data);
+        }
+      })
+      .catch((err) => console.warn("Error loading trains from server, using pre-defined:", err));
+  }, []);
 
   // Clock interval update
   useEffect(() => {
@@ -63,8 +79,8 @@ export default function App() {
 
   // Find active train data
   const activeTrainData = useMemo(() => {
-    const found = POPULAR_TRAINS.find((t) => t.number === selectedTrainNum);
-    if (!found) return POPULAR_TRAINS[0];
+    const found = trains.find((t) => t.number === selectedTrainNum) || POPULAR_TRAINS.find((t) => t.number === selectedTrainNum);
+    if (!found) return trains[0] || POPULAR_TRAINS[0];
 
     // Calculate Stop status segments dynamically based on simulation mileage progress
     const totalDist = found.stops[found.stops.length - 1].distanceKm;
@@ -111,14 +127,43 @@ export default function App() {
       currentSpeedKmph: computedSpeed,
       stops: updatedStops
     };
-  }, [selectedTrainNum, simulationProgress]);
+  }, [selectedTrainNum, simulationProgress, trains]);
 
   const filteredTrains = useMemo(() => {
-    return POPULAR_TRAINS.filter((t) => {
+    return trains.filter((t) => {
       const matchText = (t.number + " " + t.name + " " + t.origin + " " + t.destination).toLowerCase();
       return matchText.includes(searchTerm.toLowerCase());
     });
-  }, [searchTerm]);
+  }, [searchTerm, trains]);
+
+  const handleDynamicSearch = async () => {
+    if (!searchTerm.trim()) return;
+    setIsSearchingDynamic(true);
+    setDynamicSearchError("");
+    try {
+      const res = await fetch("/api/trains/search-dynamic", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ query: searchTerm }),
+      });
+      const data = await res.json();
+      if (data.success && data.train) {
+        setTrains((prev) => {
+          if (prev.some((t) => t.number === data.train.number)) return prev;
+          return [...prev, data.train];
+        });
+        setSelectedTrainNum(data.train.number);
+        setSearchTerm("");
+      } else {
+        setDynamicSearchError(data.error || "Generation could not construct route. Try a name or a generic 5-digit number.");
+      }
+    } catch (err) {
+      console.error("Dynamic route error:", err);
+      setDynamicSearchError("Pulse link busy. Tried fallback, please try with another train query.");
+    } finally {
+      setIsSearchingDynamic(false);
+    }
+  };
 
   return (
     <div id="full-app-container" className="min-h-screen bg-[#020617] text-slate-100 flex flex-col antialiased relative overflow-x-hidden">
@@ -145,8 +190,8 @@ export default function App() {
               <h1 className="text-lg md:text-xl font-bold tracking-tight text-white antialiased">
                 RailPulse <span className="text-blue-500 text-sm font-semibold ml-1">Live Status</span>
               </h1>
-              <span className="text-[9px] bg-blue-500/10 text-blue-400 font-mono border border-blue-500/20 px-2 py-0.5 rounded">
-                v2.6
+              <span className="text-[9px] bg-blue-500/10 text-blue-400 font-mono border border-blue-500/20 px-2 py-0.5 rounded animate-pulse">
+                v2.6 Live-DB
               </span>
             </div>
             <p className="text-[10px] text-slate-400 uppercase tracking-widest font-semibold">
@@ -184,7 +229,7 @@ export default function App() {
                 type="text"
                 value={searchTerm}
                 onChange={(e) => setSearchTerm(e.target.value)}
-                placeholder="Lookup trains by name/number (e.g., Vande Bharat, 12301)..."
+                placeholder="Lookup standard or custom train (e.g., Kerala Express, 12626)..."
                 className="w-full pl-10 pr-4 py-2.5 bg-slate-950/50 hover:bg-slate-950/80 border border-white/5 focus:outline-none focus:ring-2 focus:ring-blue-500/30 focus:border-blue-500/80 text-xs rounded-xl text-slate-100 placeholder-slate-500 transition-all font-mono font-medium"
               />
             </div>
@@ -192,9 +237,9 @@ export default function App() {
             {/* popular train Quick Chips select */}
             <div className="w-full lg:w-auto flex items-center gap-1.5 overflow-x-auto pb-1 lg:pb-0 scrollbar-none">
               <span className="text-[10px] text-slate-400 font-bold uppercase tracking-wider shrink-0 mr-1.5 font-mono">
-                Active Fleet:
+                Active Fleet ({trains.length}):
               </span>
-              {POPULAR_TRAINS.map((train) => (
+              {trains.slice(0, 5).map((train) => (
                 <button
                   key={train.number}
                   onClick={() => setSelectedTrainNum(train.number)}
@@ -212,39 +257,90 @@ export default function App() {
 
           {/* Quick search match dropdown list */}
           {searchTerm && (
-            <div className="mt-2 bg-slate-950/80 backdrop-blur-md border border-white/5 rounded-2xl p-3 max-h-56 overflow-y-auto">
-              <div className="text-[9px] font-bold text-slate-500 uppercase tracking-widest px-2 mb-1.5 font-mono">
-                Matching Systems ({filteredTrains.length})
+            <div className="mt-2 bg-slate-950/80 backdrop-blur-md border border-white/5 rounded-2xl p-4 max-h-80 overflow-y-auto">
+              <div className="text-[9px] font-bold text-slate-500 uppercase tracking-widest px-2 mb-2 flex items-center justify-between font-mono">
+                <span>Matching Systems ({filteredTrains.length})</span>
+                {isSearchingDynamic && <span className="text-blue-400 animate-pulse">Telemetry Active</span>}
               </div>
+              
               {filteredTrains.length === 0 ? (
-                <div className="text-slate-500 text-center py-4 text-xs font-mono">
-                  No train coordinates found for "{searchTerm}".
+                <div className="text-center py-6 text-xs font-mono space-y-3">
+                  <p className="text-slate-400">"{searchTerm}" is not loaded in local cache.</p>
+                  <button
+                    onClick={handleDynamicSearch}
+                    disabled={isSearchingDynamic}
+                    className="px-5 py-2.5 bg-gradient-to-r from-blue-600 to-cyan-500 hover:from-blue-700 hover:to-cyan-600 disabled:opacity-50 text-white font-bold text-xs rounded-xl flex items-center gap-2 mx-auto shadow-lg shadow-blue-500/20 transition-all font-sans cursor-pointer"
+                  >
+                    {isSearchingDynamic ? (
+                      <>
+                        <Sparkles className="w-4 h-4 animate-spin text-white" />
+                        Querying AI & GPS Satellite...
+                      </>
+                    ) : (
+                      <>
+                        <Sparkles className="w-4 h-4 text-white" />
+                        Query National Indian Rail DB
+                      </>
+                    )}
+                  </button>
+                  {dynamicSearchError && (
+                    <p className="text-rose-400 text-[11px] font-mono">{dynamicSearchError}</p>
+                  )}
                 </div>
               ) : (
-                <div className="grid grid-cols-1 sm:grid-cols-2 md:grid-cols-3 gap-2">
-                  {filteredTrains.map((item) => (
+                <div className="space-y-4">
+                  <div className="grid grid-cols-1 sm:grid-cols-2 md:grid-cols-3 gap-2">
+                    {filteredTrains.map((item) => (
+                      <button
+                        key={item.number}
+                        onClick={() => {
+                          setSelectedTrainNum(item.number);
+                          setSearchTerm("");
+                        }}
+                        className="text-left p-2.5 bg-slate-900/60 border border-white/5 hover:border-blue-500/50 rounded-xl transition-all"
+                      >
+                        <div className="flex items-center justify-between mb-1">
+                          <span className="text-xs font-bold text-blue-400 font-mono">{item.number}</span>
+                          <span className="text-[9px] font-semibold bg-blue-500/10 text-blue-400 border border-blue-500/20 px-1.5 rounded">
+                            {item.type}
+                          </span>
+                        </div>
+                        <div className="text-xs text-slate-200 font-medium truncate">{item.name}</div>
+                        <div className="text-[9.5px] text-slate-400 mt-1.5 flex items-center gap-1 truncate font-mono">
+                          <span className="text-slate-300">{item.origin.split(" (")[0]}</span>
+                          <ArrowRightLeft className="w-2.5 h-2.5 text-slate-600" />
+                          <span className="text-slate-300">{item.destination.split(" (")[0]}</span>
+                        </div>
+                      </button>
+                    ))}
+                  </div>
+
+                  {/* Dynamic generation trigger panel inside dropdown */}
+                  <div className="border-t border-white/5 pt-3 flex flex-col sm:flex-row items-center justify-between gap-3">
+                    <span className="text-[10px] text-slate-400 font-mono">
+                      Searching for an unlisted train? Query Indian Railways satellite DB:
+                    </span>
                     <button
-                      key={item.number}
-                      onClick={() => {
-                        setSelectedTrainNum(item.number);
-                        setSearchTerm("");
-                      }}
-                      className="text-left p-2.5 bg-slate-900/60 border border-white/5 hover:border-blue-500/50 rounded-xl transition-all"
+                      onClick={handleDynamicSearch}
+                      disabled={isSearchingDynamic}
+                      className="px-4 py-2 bg-slate-900 hover:bg-slate-800 border border-white/10 hover:border-blue-500/30 text-xs text-slate-200 font-bold rounded-xl flex items-center gap-2 transition-all font-mono shadow"
                     >
-                      <div className="flex items-center justify-between mb-1">
-                        <span className="text-xs font-bold text-blue-400 font-mono">{item.number}</span>
-                        <span className="text-[9px] font-semibold bg-blue-500/10 text-blue-400 border border-blue-500/20 px-1.5 rounded">
-                          {item.type}
-                        </span>
-                      </div>
-                      <div className="text-xs text-slate-200 font-medium truncate">{item.name}</div>
-                      <div className="text-[9.5px] text-slate-400 mt-1.5 flex items-center gap-1 truncate font-mono">
-                        <span className="text-slate-300">{item.origin.split(" (")[0]}</span>
-                        <ArrowRightLeft className="w-2.5 h-2.5 text-slate-600" />
-                        <span className="text-slate-300">{item.destination.split(" (")[0]}</span>
-                      </div>
+                      {isSearchingDynamic ? (
+                        <>
+                          <Sparkles className="w-3.5 h-3.5 animate-spin text-blue-400" />
+                          Locating...
+                        </>
+                      ) : (
+                        <>
+                          <Sparkles className="w-3.5 h-3.5 text-blue-400" />
+                          AI Satellite Fetch
+                        </>
+                      )}
                     </button>
-                  ))}
+                  </div>
+                  {dynamicSearchError && (
+                    <p className="text-rose-400 text-center text-[11px] font-mono">{dynamicSearchError}</p>
+                  )}
                 </div>
               )}
             </div>
