@@ -43,7 +43,21 @@ if (typeof window !== 'undefined') {
     SafeWebSocket.CLOSING = OriginalWebSocket.CLOSING;
     SafeWebSocket.CLOSED = OriginalWebSocket.CLOSED;
     
-    window.WebSocket = SafeWebSocket as any;
+    try {
+      Object.defineProperty(window, 'WebSocket', {
+        value: SafeWebSocket,
+        configurable: true,
+        writable: true,
+        enumerable: true
+      });
+    } catch (e) {
+      console.warn('[HMR Mitigation] Could not redefine window.WebSocket via defineProperty:', e);
+      try {
+        (window as any).WebSocket = SafeWebSocket;
+      } catch (err) {
+        console.warn('[HMR Mitigation] Reassignment failed as well:', err);
+      }
+    }
   }
 
   window.addEventListener('unhandledrejection', (event) => {
