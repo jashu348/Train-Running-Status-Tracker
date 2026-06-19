@@ -33,6 +33,50 @@ function getGeminiClient(): GoogleGenAI {
   return aiClient;
 }
 
+// Robust fallback & retry mechanism across multiple Gemini model variations (2.5-flash is stable, 1.5-flash is robust, 3.5-flash is experimental)
+async function generateContentWithRetry(
+  client: GoogleGenAI,
+  config: {
+    contents: any;
+    systemInstruction?: string;
+    responseMimeType?: string;
+  }
+): Promise<any> {
+  const modelsToTry = ["gemini-2.5-flash", "gemini-1.5-flash", "gemini-3.5-flash"];
+  let lastError = null;
+
+  for (const modelName of modelsToTry) {
+    let attempts = 2; // Try up to 2 times for each model
+    while (attempts > 0) {
+      try {
+        console.log(`[AI Satellites] Requesting content with model: ${modelName} (${attempts} attempts left for this model)...`);
+        const response = await client.models.generateContent({
+          model: modelName,
+          contents: config.contents,
+          config: {
+            ...(config.systemInstruction ? { systemInstruction: config.systemInstruction } : {}),
+            ...(config.responseMimeType ? { responseMimeType: config.responseMimeType } : {}),
+          }
+        });
+        if (response) {
+          console.log(`[AI Satellites] Success using model: ${modelName}`);
+          return response;
+        }
+      } catch (err: any) {
+        lastError = err;
+        console.warn(`[AI Satellites WARNING] Model ${modelName} call failed (attempts remaining: ${attempts - 1}):`, err.message || err);
+        attempts--;
+        if (attempts > 0) {
+          // Wait 1000ms before triggering the second attempt
+          await new Promise((resolve) => setTimeout(resolve, 1000));
+        }
+      }
+    }
+  }
+  
+  throw lastError || new Error("All generative satellite fallback models failed");
+}
+
 // Declare active trains list stateful on the server
 let activeTrainsList = [...POPULAR_TRAINS];
 
@@ -322,30 +366,31 @@ app.post("/api/trains/search-dynamic", async (req, res) => {
       4. Make sure coordinates are logical (do not jump forward and back randomly).
     `;
 
-    const aiResponse = await client.models.generateContent({
-      model: "gemini-3.5-flash",
+    const aiResponse = await generateContentWithRetry(client, {
       contents: prompt,
-      config: {
-        responseMimeType: "application/json",
-      },
+      responseMimeType: "application/json"
     });
 
-    const outputText = aiResponse.text || "{}";
+    let outputText = aiResponse.text || "{}";
+    // Sanitize any markdown JSON block wrapping returned by old/spiky models
+    if (outputText.includes("```")) {
+      outputText = outputText.replace(/```json/g, "").replace(/```/g, "").trim();
+    }
     const generated = JSON.parse(outputText);
 
     if (generated && generated.number && generated.stops && generated.stops.length > 0) {
       // Set lastUpdated
       generated.lastUpdated = new Date().toLocaleTimeString();
       activeTrainsList.push(generated);
-      return res.json({ success: true, train: generated, isNew: true });
+      return res.json({ success: true, train: generated, isNew: true, isProcedural: false });
     }
 
     throw new Error("Invalid structure returned from model");
   } catch (err: any) {
-    console.warn("Gemini dynamic search failed, falling back to procedural generator:", err);
+    console.warn("[Copilot warning] Gemini dynamic search failed or received 503, fallback procedurally generated:", err.message || err);
     const fallback = generateProceduralTrain(cleanedQuery);
     activeTrainsList.push(fallback);
-    res.json({ success: true, train: fallback, isNew: true });
+    res.json({ success: true, train: fallback, isNew: true, isProcedural: true });
   }
 });
 
@@ -431,12 +476,9 @@ User asks: "${message}"
     }
 
     const client = getGeminiClient();
-    const response = await client.models.generateContent({
-      model: "gemini-3.5-flash",
+    const response = await generateContentWithRetry(client, {
       contents: prompt,
-      config: {
-        systemInstruction,
-      },
+      systemInstruction,
     });
 
     res.json({ text: response.text });
