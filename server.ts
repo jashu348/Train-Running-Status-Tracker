@@ -492,8 +492,13 @@ User asks: "${message}"
 async function startServer() {
   if (process.env.NODE_ENV !== "production") {
     console.log("Starting server in DEVELOPMENT mode...");
+    const isHmrDisabled = process.env.DISABLE_HMR === "true";
     const vite = await createViteServer({
-      server: { middlewareMode: true },
+      server: {
+        middlewareMode: true,
+        hmr: isHmrDisabled ? false : { overlay: false },
+        watch: isHmrDisabled ? null : {},
+      },
       appType: "spa",
     });
     app.use(vite.middlewares);
